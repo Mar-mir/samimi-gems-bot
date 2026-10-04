@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.bak
+*.bak-copybtn
+COPY-REPORT-*.md
