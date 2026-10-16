@@ -50,48 +50,6 @@ const FALLBACK_MODELS = [
 function model(env) { return (env.MODEL || DEFAULT_MODEL).trim(); }
 function allowedId(env) { return String(env.ALLOWED_USER_ID || "93255700").trim(); }
 
-// ---------- answer constraints (hard-enforced, model can't override) ----------
-function maxCharsFromInstruction(instr) {
-  const s = String(instr || "");
-  const nums = [];
-  let m;
-  const re1 = /(\d{2,4})\s*(characters|chars|حرف|کاراکتر)/gi;
-  while ((m = re1.exec(s))) nums.push(Number(m[1]));
-  const re2 = /(?:never exceed|max(?:imum)?|up to|upto|زیر|حداکثر)\D{0,20}(\d{2,4})/gi;
-  while ((m = re2.exec(s))) nums.push(Number(m[1]));
-  if (!nums.length) return 0;
-  return Math.min(...nums);
-}
-function sanitizeAnswer(text, instruction) {
-  let s = String(text || "").replace(/\r/g, "").trim();
-  const instr = String(instruction || "");
-  if (/only lowercase/i.test(instr)) s = s.toLowerCase();
-  // short-reply gems: plain words only — strip math/dash symbols that models sneak in
-  if (maxCharsFromInstruction(instr) > 0) {
-    s = s.replace(/[><+]/g, " ");
-    s = s.replace(/[–—−‐‑]/g, " ");
-    s = s.replace(/-/g, " ");
-    s = s.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-  }
-  if (/no emojis/i.test(instr)) {
-    s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, "").replace(/[ \t]{2,}/g, " ").trim();
-  }
-  const max = maxCharsFromInstruction(instr);
-  if (max > 0 && s.length > max) {
-    let cut = s.slice(0, max);
-    // prefer a complete sentence: cut at last . ! ? inside the limit
-    const lastEnd = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
-    if (lastEnd >= Math.floor(max * 0.4)) {
-      s = cut.slice(0, lastEnd + 1).trim();
-    } else {
-      const lastSpace = cut.lastIndexOf(" ");
-      if (lastSpace >= Math.floor(max * 0.55)) cut = cut.slice(0, lastSpace);
-      s = cut.trim();
-    }
-  }
-  return s;
-}
-
 // ---------- Telegram ----------
 async function tg(token, method, payload, isForm = false) {
   const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, isForm
@@ -167,7 +125,6 @@ const kActive = (u) => `active:${u}`;
 const kHist = (u) => `hist:${u}`;
 const kPending = (u) => `pending:${u}`;
 const kBuf = (u) => `buf:${u}`;
-const kLastModel = (u) => `lastmodel:${u}`;
 
 async function loadJson(store, key, fb) {
   try {
@@ -225,9 +182,9 @@ Sound like a real crypto Twitter user, not an assistant.
 Replies can be imperfect, relaxed, and conversational.
 Length rules
 
-Each reply must be 85 characters max.
+Each reply must be 65 characters max.
 
-Never exceed 85 characters. One single short complete sentence, never cut off mid-sentence.
+Never exceed 85 characters.
 
 If the reply feels stiff, shorten it instead of formalizing it.
 Style rules
@@ -374,7 +331,7 @@ function modelsToTryFromList(primary, freeList) {
   return out;
 }
 
-async function askNara(env, store, system, history, userText, maxTokens = 0) {
+async function askNara(env, store, system, history, userText) {
   const msgs = [{ role: "system", content: system }];
   for (const m of history.slice(-12)) msgs.push(m);
   msgs.push({ role: "user", content: userText });
@@ -382,8 +339,6 @@ async function askNara(env, store, system, history, userText, maxTokens = 0) {
   const chain = modelsToTryFromList(model(env), free);
   console.log("chain:", chain.join(","));
   let lastErr = null;
-  const bodyBase = { messages: msgs, temperature: 0.8 };
-  if (maxTokens > 0) bodyBase.max_tokens = maxTokens;
   for (const m of chain) {
     const t0 = Date.now();
     try {
@@ -394,14 +349,14 @@ async function askNara(env, store, system, history, userText, maxTokens = 0) {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${env.NARA_KEY}`,
         },
-        body: JSON.stringify({ model: m, ...bodyBase }),
+        body: JSON.stringify({ model: m, messages: msgs, temperature: 0.7 }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { lastErr = new Error(j?.error?.message || j?.message || `Nara HTTP ${r.status}`); console.log("fail", m, r.status, String(lastErr.message).slice(0, 120)); continue; }
       const text = j?.choices?.[0]?.message?.content?.trim();
       if (!text) { lastErr = new Error("پاسخ خالی از مدل"); console.log("fail", m, "empty"); continue; }
       console.log("ok", m, Date.now() - t0, "ms");
-      return { text, model: m };
+      return text;
     } catch (e) { lastErr = e; console.log("err", m, e?.message?.slice(0, 120)); }
   }
   throw lastErr || new Error("همه مدل‌ها خطا دادند");
@@ -421,16 +376,10 @@ async function answerChat(env, token, store, chatId, u, fullText) {
   const g = await getGem(store, u, act);
   if (!g) { await tg(token, "sendMessage", { chat_id: chatId, text: `❌ دستیار «${act}» پیدا نشد. /mygems رو ببین.` }); return; }
   const system = g.instruction + (g.knowledge ? `\n\n[دانش ضمیمه]:\n${g.knowledge}` : "");
-  const hardMax = maxCharsFromInstruction(g.instruction);
-  const systemHard = hardMax > 0
-    ? system + `\n\n[HARD RULE — must obey]: the entire reply must be a complete thought of ${hardMax} characters or fewer (including spaces). Write short enough to finish the sentence inside the limit — never trail off mid-sentence. Plain words only: never use > < + - or em dashes.`
-    : system;
   const hist = await loadJson(store, kHist(u), []);
   try {
     await tg(token, "sendChatAction", { chat_id: chatId, action: "typing" });
-    const { text: rawAnswer, model: usedModel } = await askNara(env, store, systemHard, hist, fullText, hardMax > 0 ? Math.ceil(hardMax / 2) : 0);
-    try { await store.put(kLastModel(u), usedModel); } catch {}
-    const answer = sanitizeAnswer(rawAnswer, g.instruction) || rawAnswer.slice(0, hardMax > 0 ? hardMax : 4000);
+    const answer = await askNara(env, store, system, hist, fullText);
     hist.push({ role: "user", content: fullText.slice(0, 2000) }, { role: "assistant", content: answer.slice(0, 4000) });
     await store.put(kHist(u), JSON.stringify(hist.slice(-MAX_HISTORY)));
     await sendLong(token, chatId, answer);
@@ -556,8 +505,7 @@ async function handleUpdate(update, env) {
     return;
   }
   if (low === "/model") {
-    const last = await store.get(kLastModel(u)).catch(() => null);
-    await tg(token, "sendMessage", { chat_id: chatId, text: `🧠 مدل پیشفرض:\n\`${model(env)}\`${last ? `\n\n✅ آخرین جواب از:\n\`${last}\`` : ""}` });
+    await tg(token, "sendMessage", { chat_id: chatId, text: `🧠 مدل فعلی:\n\`${model(env)}\`` });
     return;
   }
   if (raw.startsWith("/")) {
