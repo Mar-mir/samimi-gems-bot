@@ -79,9 +79,15 @@ function sanitizeAnswer(text, instruction) {
   const max = maxCharsFromInstruction(instr);
   if (max > 0 && s.length > max) {
     let cut = s.slice(0, max);
-    const lastSpace = cut.lastIndexOf(" ");
-    if (lastSpace >= Math.floor(max * 0.55)) cut = cut.slice(0, lastSpace);
-    s = cut.trim();
+    // prefer a complete sentence: cut at last . ! ? inside the limit
+    const lastEnd = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+    if (lastEnd >= Math.floor(max * 0.4)) {
+      s = cut.slice(0, lastEnd + 1).trim();
+    } else {
+      const lastSpace = cut.lastIndexOf(" ");
+      if (lastSpace >= Math.floor(max * 0.55)) cut = cut.slice(0, lastSpace);
+      s = cut.trim();
+    }
   }
   return s;
 }
@@ -161,6 +167,7 @@ const kActive = (u) => `active:${u}`;
 const kHist = (u) => `hist:${u}`;
 const kPending = (u) => `pending:${u}`;
 const kBuf = (u) => `buf:${u}`;
+const kLastModel = (u) => `lastmodel:${u}`;
 
 async function loadJson(store, key, fb) {
   try {
@@ -218,9 +225,9 @@ Sound like a real crypto Twitter user, not an assistant.
 Replies can be imperfect, relaxed, and conversational.
 Length rules
 
-Each reply must be 65 characters max.
+Each reply must be 75 characters max.
 
-Never exceed 85 characters.
+Never exceed 75 characters. A complete short thought, never cut off mid-sentence.
 
 If the reply feels stiff, shorten it instead of formalizing it.
 Style rules
@@ -392,7 +399,7 @@ async function askNara(env, store, system, history, userText) {
       const text = j?.choices?.[0]?.message?.content?.trim();
       if (!text) { lastErr = new Error("پاسخ خالی از مدل"); console.log("fail", m, "empty"); continue; }
       console.log("ok", m, Date.now() - t0, "ms");
-      return text;
+      return { text, model: m };
     } catch (e) { lastErr = e; console.log("err", m, e?.message?.slice(0, 120)); }
   }
   throw lastErr || new Error("همه مدل‌ها خطا دادند");
@@ -414,12 +421,13 @@ async function answerChat(env, token, store, chatId, u, fullText) {
   const system = g.instruction + (g.knowledge ? `\n\n[دانش ضمیمه]:\n${g.knowledge}` : "");
   const hardMax = maxCharsFromInstruction(g.instruction);
   const systemHard = hardMax > 0
-    ? system + `\n\n[HARD RULE — must obey]: the entire reply must be ${hardMax} characters or fewer (including spaces). Plain words only: never use > < + - or em dashes. If longer, shorten it.`
+    ? system + `\n\n[HARD RULE — must obey]: the entire reply must be a complete thought of ${hardMax} characters or fewer (including spaces). Write short enough to finish the sentence inside the limit — never trail off mid-sentence. Plain words only: never use > < + - or em dashes.`
     : system;
   const hist = await loadJson(store, kHist(u), []);
   try {
     await tg(token, "sendChatAction", { chat_id: chatId, action: "typing" });
-    const rawAnswer = await askNara(env, store, systemHard, hist, fullText);
+    const { text: rawAnswer, model: usedModel } = await askNara(env, store, systemHard, hist, fullText);
+    try { await store.put(kLastModel(u), usedModel); } catch {}
     const answer = sanitizeAnswer(rawAnswer, g.instruction) || rawAnswer.slice(0, hardMax > 0 ? hardMax : 4000);
     hist.push({ role: "user", content: fullText.slice(0, 2000) }, { role: "assistant", content: answer.slice(0, 4000) });
     await store.put(kHist(u), JSON.stringify(hist.slice(-MAX_HISTORY)));
@@ -546,7 +554,8 @@ async function handleUpdate(update, env) {
     return;
   }
   if (low === "/model") {
-    await tg(token, "sendMessage", { chat_id: chatId, text: `🧠 مدل فعلی:\n\`${model(env)}\`` });
+    const last = await store.get(kLastModel(u)).catch(() => null);
+    await tg(token, "sendMessage", { chat_id: chatId, text: `🧠 مدل پیشفرض:\n\`${model(env)}\`${last ? `\n\n✅ آخرین جواب از:\n\`${last}\`` : ""}` });
     return;
   }
   if (raw.startsWith("/")) {
