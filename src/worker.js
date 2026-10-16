@@ -225,9 +225,9 @@ Sound like a real crypto Twitter user, not an assistant.
 Replies can be imperfect, relaxed, and conversational.
 Length rules
 
-Each reply must be 75 characters max.
+Each reply must be 85 characters max.
 
-Never exceed 75 characters. A complete short thought, never cut off mid-sentence.
+Never exceed 85 characters. One single short complete sentence, never cut off mid-sentence.
 
 If the reply feels stiff, shorten it instead of formalizing it.
 Style rules
@@ -374,7 +374,7 @@ function modelsToTryFromList(primary, freeList) {
   return out;
 }
 
-async function askNara(env, store, system, history, userText) {
+async function askNara(env, store, system, history, userText, maxTokens = 0) {
   const msgs = [{ role: "system", content: system }];
   for (const m of history.slice(-12)) msgs.push(m);
   msgs.push({ role: "user", content: userText });
@@ -382,6 +382,8 @@ async function askNara(env, store, system, history, userText) {
   const chain = modelsToTryFromList(model(env), free);
   console.log("chain:", chain.join(","));
   let lastErr = null;
+  const bodyBase = { messages: msgs, temperature: 0.8 };
+  if (maxTokens > 0) bodyBase.max_tokens = maxTokens;
   for (const m of chain) {
     const t0 = Date.now();
     try {
@@ -392,7 +394,7 @@ async function askNara(env, store, system, history, userText) {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${env.NARA_KEY}`,
         },
-        body: JSON.stringify({ model: m, messages: msgs, temperature: 0.7 }),
+        body: JSON.stringify({ model: m, ...bodyBase }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { lastErr = new Error(j?.error?.message || j?.message || `Nara HTTP ${r.status}`); console.log("fail", m, r.status, String(lastErr.message).slice(0, 120)); continue; }
@@ -426,7 +428,7 @@ async function answerChat(env, token, store, chatId, u, fullText) {
   const hist = await loadJson(store, kHist(u), []);
   try {
     await tg(token, "sendChatAction", { chat_id: chatId, action: "typing" });
-    const { text: rawAnswer, model: usedModel } = await askNara(env, store, systemHard, hist, fullText);
+    const { text: rawAnswer, model: usedModel } = await askNara(env, store, systemHard, hist, fullText, hardMax > 0 ? Math.ceil(hardMax / 2) : 0);
     try { await store.put(kLastModel(u), usedModel); } catch {}
     const answer = sanitizeAnswer(rawAnswer, g.instruction) || rawAnswer.slice(0, hardMax > 0 ? hardMax : 4000);
     hist.push({ role: "user", content: fullText.slice(0, 2000) }, { role: "assistant", content: answer.slice(0, 4000) });
