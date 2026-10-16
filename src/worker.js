@@ -50,6 +50,42 @@ const FALLBACK_MODELS = [
 function model(env) { return (env.MODEL || DEFAULT_MODEL).trim(); }
 function allowedId(env) { return String(env.ALLOWED_USER_ID || "93255700").trim(); }
 
+// ---------- answer constraints (hard-enforced, model can't override) ----------
+function maxCharsFromInstruction(instr) {
+  const s = String(instr || "");
+  const nums = [];
+  let m;
+  const re1 = /(\d{2,4})\s*(characters|chars|حرف|کاراکتر)/gi;
+  while ((m = re1.exec(s))) nums.push(Number(m[1]));
+  const re2 = /(?:never exceed|max(?:imum)?|up to|upto|زیر|حداکثر)\D{0,20}(\d{2,4})/gi;
+  while ((m = re2.exec(s))) nums.push(Number(m[1]));
+  if (!nums.length) return 0;
+  return Math.min(...nums);
+}
+function sanitizeAnswer(text, instruction) {
+  let s = String(text || "").replace(/\r/g, "").trim();
+  const instr = String(instruction || "");
+  if (/only lowercase/i.test(instr)) s = s.toLowerCase();
+  // short-reply gems: plain words only — strip math/dash symbols that models sneak in
+  if (maxCharsFromInstruction(instr) > 0) {
+    s = s.replace(/[><+]/g, " ");
+    s = s.replace(/[–—−‐‑]/g, " ");
+    s = s.replace(/-/g, " ");
+    s = s.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  if (/no emojis/i.test(instr)) {
+    s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, "").replace(/[ \t]{2,}/g, " ").trim();
+  }
+  const max = maxCharsFromInstruction(instr);
+  if (max > 0 && s.length > max) {
+    let cut = s.slice(0, max);
+    const lastSpace = cut.lastIndexOf(" ");
+    if (lastSpace >= Math.floor(max * 0.55)) cut = cut.slice(0, lastSpace);
+    s = cut.trim();
+  }
+  return s;
+}
+
 // ---------- Telegram ----------
 async function tg(token, method, payload, isForm = false) {
   const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, isForm
@@ -376,10 +412,15 @@ async function answerChat(env, token, store, chatId, u, fullText) {
   const g = await getGem(store, u, act);
   if (!g) { await tg(token, "sendMessage", { chat_id: chatId, text: `❌ دستیار «${act}» پیدا نشد. /mygems رو ببین.` }); return; }
   const system = g.instruction + (g.knowledge ? `\n\n[دانش ضمیمه]:\n${g.knowledge}` : "");
+  const hardMax = maxCharsFromInstruction(g.instruction);
+  const systemHard = hardMax > 0
+    ? system + `\n\n[HARD RULE — must obey]: the entire reply must be ${hardMax} characters or fewer (including spaces). Plain words only: never use > < + - or em dashes. If longer, shorten it.`
+    : system;
   const hist = await loadJson(store, kHist(u), []);
   try {
     await tg(token, "sendChatAction", { chat_id: chatId, action: "typing" });
-    const answer = await askNara(env, store, system, hist, fullText);
+    const rawAnswer = await askNara(env, store, systemHard, hist, fullText);
+    const answer = sanitizeAnswer(rawAnswer, g.instruction) || rawAnswer.slice(0, hardMax > 0 ? hardMax : 4000);
     hist.push({ role: "user", content: fullText.slice(0, 2000) }, { role: "assistant", content: answer.slice(0, 4000) });
     await store.put(kHist(u), JSON.stringify(hist.slice(-MAX_HISTORY)));
     await sendLong(token, chatId, answer);
