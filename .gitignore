@@ -6,3 +6,4 @@ node_modules/
 *.bak
 *.bak-copybtn
 COPY-REPORT-*.md
+polling.log
