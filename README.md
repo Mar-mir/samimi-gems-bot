@@ -90,7 +90,7 @@ curl https://samimi-gems-bot.<subdomain>.workers.dev/health
 
 در `wrangler.toml`:
 ```toml
-MODEL = "mimo-v2.5-free"
+MODEL = "muse-spark-1.3-contributor"
 NARA_BASE = "https://router.bynara.id/v1"
 ```
 اگه مدل اصلی خطا بده، ربات خودش سراغ بقیه مدل‌های رایگان می‌ره

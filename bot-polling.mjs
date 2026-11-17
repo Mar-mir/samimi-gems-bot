@@ -15,7 +15,7 @@ const env = {
   TOKEN,
   NARA_KEY,
   NARA_BASE: process.env.NARA_BASE || "https://router.bynara.id/v1",
-  MODEL: process.env.MODEL || "nemotron-3.5-lightning-free",
+  MODEL: process.env.MODEL || "muse-spark-1.3-contributor",
   ALLOWED_USER_ID: process.env.ALLOWED_USER_ID || "93255700",
   GEMS_KV: {
     async get(k) { return memKV.has(k) ? memKV.get(k) : null; },

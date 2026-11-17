@@ -12,7 +12,7 @@
 const NARA_MODELS_URL = "/models";
 const MODELS_CACHE_TTL = 6 * 24 * 3600 * 1000; // 6 days, refreshed weekly by cron
 
-const DEFAULT_MODEL = "nemotron-3.5-lightning-free";
+const DEFAULT_MODEL = "muse-spark-1.3-contributor";
 const MAX_HISTORY = 20;          // messages kept (user+assistant)
 const MAX_INSTRUCTION = 6000;    // chars per gem instruction
 const MAX_KNOWLEDGE = 6000;      // chars extra file context per gem
@@ -34,10 +34,11 @@ function isFreeModel(m) {
 }
 // Static bootstrap (works with zero KV); refreshed+validated weekly into KV by /refresh-models or cron.
 // Order = user's combo first, then proven fallbacks. Known-bad excluded: jev (400),
-// mimo-v2.6-flash-free + muse-spark-1.3-contributor-free (403 on this key), *-video-* (text rejected).
+// mimo-v2.6-flash-free (403 on old key), *-video-* (text rejected).
 const FALLBACK_MODELS = [
-  "mimo-v2.5-free",
+  "muse-spark-1.3-contributor",
   "muse-spark-1.2-contributor",
+  "mimo-v2.5-free",
   "nemotron-3.5-lightning-free",
   "laguna-s-2.1",
   "space-bunny-alpha",
@@ -289,7 +290,6 @@ ${HELP}`;
 const EXCLUDE_MODELS = new Set([
   "jev",
   "mimo-v2.6-flash-free",
-  "muse-spark-1.3-contributor-free",
 ]);
 // Fetch fresh free-model ids from Nara router; store in KV with timestamp
 async function refreshFreeModels(env, store) {
